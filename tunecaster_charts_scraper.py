@@ -282,7 +282,6 @@ class TuneCasterCompleteScraper:
         soup = BeautifulSoup(html_content, 'html.parser')
         songs = self.extract_songs_from_html(soup)
         
-        # Convert to new format with individual records
         chart_date = self.extract_chart_date_from_url(url)
         records = []
         
@@ -292,7 +291,7 @@ class TuneCasterCompleteScraper:
                 "chart_date": chart_date,
                 "rank": song['position'],
                 "title": song['title'],
-                "artist": json.dumps(song['artist'], ensure_ascii=False),  # Store as JSON array string without escaping
+                "artist": json.dumps(song['artist'], ensure_ascii=False),
                 "url": url
             }
             records.append(record)
@@ -303,7 +302,7 @@ class TuneCasterCompleteScraper:
                 'chart_date': chart_date,
                 'url': url
             },
-            'records': records  # Changed from 'songs' to 'records'
+            'records': records
         }
     
     def extract_songs_from_html(self, soup):
@@ -492,36 +491,25 @@ class TuneCasterCompleteScraper:
         return ""
     
     def extract_chart_date_from_url(self, url):
-        """Extract chart date from URL pattern"""
-        # Extract date from URL patterns like rock0026.html or week0026.html
         match = re.search(r'(?:rock|week)(\d{4})\.html', url)
         if match:
             week_number = match.group(1)
-            # Convert week number to approximate date (this is a simplified approach)
             year = 2000 + int(week_number[:2]) if week_number[:2] in ['00'] else 2000
             week = int(week_number[2:])
-            
-            # Simple week to date conversion (approximate)
             import datetime
             try:
                 jan_1 = datetime.date(year, 1, 1)
                 week_start = jan_1 + datetime.timedelta(weeks=week-1)
                 return week_start.strftime('%Y-%m-%d')
             except:
-                return f"{year}-01-01"  # Fallback
+                return f"{year}-01-01"
         
-        return "2000-01-01"  # Default fallback
+        return "2000-01-01"
     
     def generate_record_id(self, url, position):
-        """Generate unique record ID from URL and position"""
-        # Extract chart identifier from URL
         url_match = re.search(r'(?:rock|week)(\d{4})\.html', url)
         chart_id = url_match.group(1) if url_match else "0000"
-        
-        # Get chart type
         chart_type = "rock" if "rock" in url else "pop"
-        
-        # Combine all parts to create a unique ID
         return f"{chart_type}_{chart_id}_{position:03d}"
         
     def extract_title_from_cell(self, title_cell):
@@ -767,18 +755,29 @@ class TuneCasterCompleteScraper:
     
     def save_incremental_data(self):
         try:
-            filename = 'data/charts_data.json'
+            filename = 'data/charts_data.csv'
+            file_exists = os.path.exists(filename)
             
-            # Process the data to ensure proper JSON formatting
-            processed_data = []
-            for chart in self.all_chart_data:
-                chart_copy = chart.copy()
-                for record in chart_copy['records']:
-                    record['artist'] = json.loads(record['artist']) if isinstance(record['artist'], str) else record['artist']
-                processed_data.append(chart_copy)
-            
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(processed_data, f, indent=2, ensure_ascii=False)
+            import csv
+            mode = 'a' if file_exists else 'w'
+            with open(filename, mode, encoding='utf-8', newline='') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(['chart_date', 'chart_type', 'rank', 'title', 'artist', 'url'])
+                
+                for chart in self.all_chart_data[-1:]:
+                    chart_type = chart['chart_info']['chart_type']
+                    for record in chart['records']:
+                        artists = json.loads(record['artist']) if isinstance(record['artist'], str) else record['artist']
+                        artist_str = ', '.join(artists) if artists else ''
+                        writer.writerow([
+                            record['chart_date'],
+                            chart_type,
+                            record['rank'],
+                            record['title'],
+                            artist_str,
+                            record['url']
+                        ])
             
             total_charts = len(self.all_chart_data)
             total_records = sum(len(chart.get('records', [])) for chart in self.all_chart_data)
