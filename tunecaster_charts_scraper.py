@@ -30,6 +30,7 @@ class TuneCasterCompleteScraper:
     
     def save_progress(self, current_url):
         try:
+            os.makedirs('data', exist_ok=True)
             self.processed_urls.add(current_url)
             progress = {
                 'processed_urls': list(self.processed_urls),
@@ -65,14 +66,18 @@ class TuneCasterCompleteScraper:
             page = await context.new_page()
             
             try:
+                print("Discovering Pop chart URLs...")
                 for decade_url in decade_pages['pop']:
                     urls = await self.extract_urls_from_decade_page(page, decade_url, 'pop')
                     self.pop_urls.extend(urls)
+                    print(f"Found {len(urls)} pop URLs from {decade_url}")
                     await asyncio.sleep(1)
                 
+                print("Discovering Rock chart URLs...")
                 for decade_url in decade_pages['rock']:
                     urls = await self.extract_urls_from_decade_page(page, decade_url, 'rock')
                     self.rock_urls.extend(urls)
+                    print(f"Found {len(urls)} rock URLs from {decade_url}")
                     await asyncio.sleep(1)
                 
             finally:
@@ -81,7 +86,10 @@ class TuneCasterCompleteScraper:
         self.pop_urls = sorted(list(set(self.pop_urls)))
         self.rock_urls = sorted(list(set(self.rock_urls)))
         
-        print(f"Pop Charts: {len(self.pop_urls)}, Rock Charts: {len(self.rock_urls)}")
+        print(f"URL Discovery Complete:")
+        print(f"Pop Charts: {len(self.pop_urls)}")
+        print(f"Rock Charts: {len(self.rock_urls)}")
+        print(f"Total Charts: {len(self.pop_urls) + len(self.rock_urls)}")
     
     async def extract_urls_from_decade_page(self, page, decade_url, chart_type):
         urls = []
@@ -141,6 +149,17 @@ class TuneCasterCompleteScraper:
                 await browser.close()
     
     async def parse_chart_alternative(self, page, url, chart_type):
+        html_content = await page.content()
+        soup = BeautifulSoup(html_content, 'html.parser')
+        chart_date = self.extract_chart_date_from_page(soup)
+        
+        if chart_date is None:
+            chart_date = self.extract_chart_date_from_url(url)
+            
+        if chart_date is None:
+            print(f"Skipping alternative parsing due to invalid date: {url}")
+            return None
+        
         try:
             chart_data = await page.evaluate('''
                 () => {
@@ -212,9 +231,7 @@ class TuneCasterCompleteScraper:
                                             !cellText.includes('week') &&
                                             !cellText.includes('chart') &&
                                             !cellText.startsWith('[') &&
-                                            cellText !== '|' &&
-                                            cellText !== '▲' &&
-                                            cellText !== '▼') {
+                                            cellText !== '|') {
                                             
                                             if (!artist || artist.length < cellText.length) {
                                                 artist = cellText;
@@ -257,13 +274,13 @@ class TuneCasterCompleteScraper:
                 return {
                     'chart_info': {
                         'chart_type': chart_type,
-                        'chart_date': self.extract_chart_date_from_url(url),
+                        'chart_date': chart_date,
                         'url': url
                     },
                     'records': [
                         {
                             "id": self.generate_record_id(url, song['position']),
-                            "chart_date": self.extract_chart_date_from_url(url),
+                            "chart_date": chart_date,
                             "rank": song['position'],
                             "title": song['title'],
                             "artist": json.dumps(song['artist']),
@@ -282,7 +299,15 @@ class TuneCasterCompleteScraper:
         soup = BeautifulSoup(html_content, 'html.parser')
         songs = self.extract_songs_from_html(soup)
         
-        chart_date = self.extract_chart_date_from_url(url)
+        chart_date = self.extract_chart_date_from_page(soup)
+        
+        if chart_date is None:
+            chart_date = self.extract_chart_date_from_url(url)
+            
+        if chart_date is None:
+            print(f"Skipping chart due to invalid date: {url}")
+            return None
+            
         records = []
         
         for song in songs:
@@ -442,7 +467,7 @@ class TuneCasterCompleteScraper:
             
             if (not line or 
                 any(skip in line.lower() for skip in ['download', 'amazon', 'img', 'src=', 'http', '![]']) or
-                re.match(r'^[\|\s\u25B2\u25BC\-]*$', line) or
+                re.match(r'^[\|\s\-]*$', line) or
                 re.match(r'^\d+\s*\|\s*\d+', line) or
                 line.isdigit()):
                 continue
@@ -464,7 +489,7 @@ class TuneCasterCompleteScraper:
             
             if (not line or 
                 any(skip in line.lower() for skip in ['download', 'amazon', 'img', 'src=', 'http', '![]']) or
-                re.match(r'^[\|\s\u25B2\u25BC\-]*$', line) or
+                re.match(r'^[\|\s\-]*$', line) or
                 re.match(r'^\[TW\]peaks', line) or
                 re.match(r'^(\d+|\-)\s*\|\s*(\d+)', line) or
                 line.isdigit() or
@@ -490,21 +515,180 @@ class TuneCasterCompleteScraper:
         
         return ""
     
-    def extract_chart_date_from_url(self, url):
-        match = re.search(r'(?:rock|week)(\d{4})\.html', url)
-        if match:
-            week_number = match.group(1)
-            year = 2000 + int(week_number[:2]) if week_number[:2] in ['00'] else 2000
-            week = int(week_number[2:])
-            import datetime
-            try:
-                jan_1 = datetime.date(year, 1, 1)
-                week_start = jan_1 + datetime.timedelta(weeks=week-1)
-                return week_start.strftime('%Y-%m-%d')
-            except:
-                return f"{year}-01-01"
+    def extract_chart_date_from_page(self, soup):
+        """Extract chart date from page content with enhanced date, month, and year parsing"""
+        try:
+            month_names = {
+                'january': 1, 'jan': 1,
+                'february': 2, 'feb': 2,
+                'march': 3, 'mar': 3,
+                'april': 4, 'apr': 4,
+                'may': 5,
+                'june': 6, 'jun': 6,
+                'july': 7, 'jul': 7,
+                'august': 8, 'aug': 8,
+                'september': 9, 'sep': 9, 'sept': 9,
+                'october': 10, 'oct': 10,
+                'november': 11, 'nov': 11,
+                'december': 12, 'dec': 12
+            }
+            
+            headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            
+            for heading in headings:
+                heading_text = heading.get_text().strip()
+                
+                date_patterns = [
+                    r'for\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})',
+                    r'([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})',
+                    r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
+                    r'([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})'
+                ]
+                
+                for pattern in date_patterns:
+                    date_match = re.search(pattern, heading_text, re.IGNORECASE)
+                    if date_match:
+                        groups = date_match.groups()
+                        
+                        try:
+                            if len(groups) == 3 and groups[0].lower() in month_names:
+                                month_str = groups[0].lower()
+                                day = int(groups[1])
+                                year = int(groups[2])
+                                month = month_names[month_str]
+                                
+                                from datetime import datetime
+                                parsed_date = datetime(year, month, day)
+                                return parsed_date.strftime('%Y-%m-%d')
+                            
+                            elif len(groups) == 3 and groups[1].lower() in month_names:
+                                day = int(groups[0])
+                                month_str = groups[1].lower()
+                                year = int(groups[2])
+                                month = month_names[month_str]
+                                
+                                from datetime import datetime
+                                parsed_date = datetime(year, month, day)
+                                return parsed_date.strftime('%Y-%m-%d')
+                                
+                        except (ValueError, KeyError):
+                            continue
+            
+            all_text_elements = soup.find_all(text=True)
+            for text in all_text_elements:
+                if isinstance(text, str) and len(text.strip()) > 10:
+                    text = text.strip()
+                    
+                    date_patterns = [
+                        r'for\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})',
+                        r'([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})',
+                        r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
+                        r'([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})'
+                    ]
+                    
+                    for pattern in date_patterns:
+                        date_match = re.search(pattern, text, re.IGNORECASE)
+                        if date_match:
+                            groups = date_match.groups()
+                            
+                            try:
+                                if len(groups) == 3 and groups[0].lower() in month_names:
+                                    month_str = groups[0].lower()
+                                    day = int(groups[1])
+                                    year = int(groups[2])
+                                    month = month_names[month_str]
+                                    
+                                    if 1900 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                                        from datetime import datetime
+                                        parsed_date = datetime(year, month, day)
+                                        return parsed_date.strftime('%Y-%m-%d')
+                                
+                                elif len(groups) == 3 and groups[1].lower() in month_names:
+                                    day = int(groups[0])
+                                    month_str = groups[1].lower()
+                                    year = int(groups[2])
+                                    month = month_names[month_str]
+                                    
+                                    if 1900 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                                        from datetime import datetime
+                                        parsed_date = datetime(year, month, day)
+                                        return parsed_date.strftime('%Y-%m-%d')
+                                        
+                            except (ValueError, KeyError):
+                                continue
+            
+            table_cells = soup.find_all(['td', 'th'])
+            for cell in table_cells:
+                cell_text = cell.get_text().strip()
+                if len(cell_text) > 10 and any(month in cell_text.lower() for month in month_names.keys()):
+                    date_patterns = [
+                        r'([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})',
+                        r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})'
+                    ]
+                    
+                    for pattern in date_patterns:
+                        date_match = re.search(pattern, cell_text, re.IGNORECASE)
+                        if date_match:
+                            groups = date_match.groups()
+                            
+                            try:
+                                if len(groups) == 3 and groups[0].lower() in month_names:
+                                    month_str = groups[0].lower()
+                                    day = int(groups[1])
+                                    year = int(groups[2])
+                                    month = month_names[month_str]
+                                    
+                                    if 1900 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                                        from datetime import datetime
+                                        parsed_date = datetime(year, month, day)
+                                        return parsed_date.strftime('%Y-%m-%d')
+                                
+                                elif len(groups) == 3 and groups[1].lower() in month_names:
+                                    day = int(groups[0])
+                                    month_str = groups[1].lower()
+                                    year = int(groups[2])
+                                    month = month_names[month_str]
+                                    
+                                    if 1900 <= year <= 2030 and 1 <= month <= 12 and 1 <= day <= 31:
+                                        from datetime import datetime
+                                        parsed_date = datetime(year, month, day)
+                                        return parsed_date.strftime('%Y-%m-%d')
+                                        
+                            except (ValueError, KeyError):
+                                continue
+            
+        except Exception as e:
+            print(f"Error extracting date from page: {e}")
         
-        return "2000-01-01"
+        return None
+    
+    def extract_chart_date_from_url(self, url):
+        match = re.search(r'/charts/(\d{2})/(?:rock|week)(\d{4})\.html', url)
+        if match:
+            decade = int(match.group(1))
+            week_number = match.group(2)
+            year_suffix = int(week_number[:2])
+            week = int(week_number[2:])
+            
+            if decade >= 60 and decade <= 99:
+                full_year = 1900 + year_suffix
+            elif decade >= 0 and decade <= 20:
+                full_year = 2000 + year_suffix
+            else:
+                full_year = 1900 + year_suffix if year_suffix >= 60 else 2000 + year_suffix
+            
+            try:
+                import datetime
+                jan_1 = datetime.date(full_year, 1, 1)
+                days_to_monday = (7 - jan_1.weekday()) % 7
+                first_monday = jan_1 + datetime.timedelta(days=days_to_monday)
+                week_start = first_monday + datetime.timedelta(weeks=week-1)
+                return week_start.strftime('%Y-%m-%d')
+            except (ValueError, OverflowError):
+                return f"{full_year}-01-01"
+        
+        print(f"Error: Could not extract date from URL: {url}")
+        return None
     
     def generate_record_id(self, url, position):
         url_match = re.search(r'(?:rock|week)(\d{4})\.html', url)
@@ -554,7 +738,7 @@ class TuneCasterCompleteScraper:
                     continue
                 
                 if (cell_text.isdigit() or 
-                    cell_text in ['\u25B2', '\u25BC', '-', '|'] or
+                    cell_text in ['-', '|'] or
                     any(skip in cell_text.lower() for skip in ['download', 'youtube', 'amazon', 'http', '../../', 'week', 'chart', 'peak', 'html', 'img']) or
                     cell_text.startswith('[') or
                     re.match(r'^\d+\s*\|\s*\d+', cell_text) or
@@ -625,8 +809,9 @@ class TuneCasterCompleteScraper:
                 if len(cleaned_artists) > 1:
                     return cleaned_artists
         
-        if 'Aaron Lewis Of Staind' in artist_text and 'Fred Durst' in artist_text:
-            return ['Aaron Lewis Of Staind', 'Fred Durst']
+        # Special case handling
+        # if 'Aaron Lewis Of Staind' in artist_text and 'Fred Durst' in artist_text:
+        #     return ['Aaron Lewis Of Staind', 'Fred Durst']
         
         return [artist_text]
     
@@ -666,7 +851,7 @@ class TuneCasterCompleteScraper:
         return unique_songs
     
     async def scrape_all_charts_sequential(self):
-        print(f"Starting sequential chart scraping...")
+        print("Starting sequential chart scraping...")
         
         self.load_progress()
         
@@ -678,6 +863,7 @@ class TuneCasterCompleteScraper:
             current_chart += 1
             
             if url in self.processed_urls:
+                print(f"[{current_chart}/{total_charts}] {i}/{len(self.rock_urls)} - SKIPPED")
                 continue
                 
             print(f"[{current_chart}/{total_charts}] {i}/{len(self.rock_urls)} - {url}")
@@ -689,45 +875,9 @@ class TuneCasterCompleteScraper:
                     records_count = len(chart_data['records'])
                     self.all_chart_data.append(chart_data)
                     
-                    for record in chart_data['records'][:3]:
-                        rank = record['rank']
-                        title = record['title']
-                        artists = json.loads(record['artist'])
-                        if isinstance(artists, list) and artists:
-                            artist_display = ', '.join(artists)
-                        else:
-                            artist_display = '[No Artist]'
-                        print(f"   {rank}. {title} - {artist_display}")
-                    
-                    self.save_progress(url)
-                    self.save_incremental_data()
-                    print(f"Success: {records_count} records")
-                    
-                else:
-                    print(f"Failed to scrape")
-                    self.save_progress(url)
-            
-            except Exception as e:
-                print(f"Error: {e}")
-                self.save_progress(url)
-            
-            await asyncio.sleep(2)
-        
-        print(f"Scraping {len(self.pop_urls)} Pop Charts...")
-        for i, url in enumerate(self.pop_urls, 1):
-            current_chart += 1
-            
-            if url in self.processed_urls:
-                continue
-            
-            print(f"[{current_chart}/{total_charts}] {i}/{len(self.pop_urls)} - {url}")
-            
-            try:
-                chart_data = await self.scrape_single_chart(url, 'pop')
-                
-                if chart_data:
-                    records_count = len(chart_data['records'])
-                    self.all_chart_data.append(chart_data)
+                    chart_date = chart_data['chart_info']['chart_date']
+                    chart_type = chart_data['chart_info']['chart_type'].upper()
+                    print(f"Chart Date: {chart_date} | Type: {chart_type}")
                     
                     for record in chart_data['records'][:3]:
                         rank = record['rank']
@@ -744,7 +894,7 @@ class TuneCasterCompleteScraper:
                     print(f"Success: {records_count} records")
                     
                 else:
-                    print(f"Failed to scrape")
+                    print("Failed to scrape")
                     self.save_progress(url)
             
             except Exception as e:
@@ -755,6 +905,7 @@ class TuneCasterCompleteScraper:
     
     def save_incremental_data(self):
         try:
+            os.makedirs('data', exist_ok=True)
             filename = 'data/charts_data.csv'
             file_exists = os.path.exists(filename)
             
@@ -798,22 +949,22 @@ class TuneCasterCompleteScraper:
         rock_count = len([c for c in self.all_chart_data if c['chart_info']['chart_type'] == 'rock'])
         total_records = sum(len(chart.get('records', [])) for chart in self.all_chart_data)
         
-        print(f"\n{'='*60}")
-        print(f"TUNECASTER SCRAPING COMPLETE")
-        print(f"{'='*60}")
+        print("\n" + "="*60)
+        print("TUNECASTER SCRAPING COMPLETE")
+        print("="*60)
         print(f"Rock Charts: {rock_count}")
         print(f"Pop Charts: {pop_count}")
         print(f"Total Charts: {len(self.all_chart_data)}")
         print(f"Total Records: {total_records}")
-        print(f"Data: charts_data.json")
-        print(f"Resume: scraper_progress.json")
-        print(f"{'='*60}")
+        print(f"Data File: data/charts_data.csv")
+        print(f"Progress File: data/scraper_progress.json")
+        print("="*60)
 
 async def main():
     scraper = TuneCasterCompleteScraper()
     
-    print("TuneCaster Scraper - Rock First")
-    print("=" * 40)
+    print("TuneCaster Complete Scraper")
+    print("="*40)
     
     try:
         await scraper.discover_all_chart_urls()
@@ -825,13 +976,13 @@ async def main():
         await scraper.scrape_all_charts_sequential()
         scraper.print_final_summary()
         
-        print(f"Scraping completed!")
+        print("Scraping completed!")
         
     except KeyboardInterrupt:
-        print(f"\nScraping interrupted")
+        print("\nScraping interrupted")
         if scraper.all_chart_data:
             scraper.print_final_summary()
-        print(f"Run script again to resume")
+        print("Run script again to resume")
     
     except Exception as e:
         print(f"Error: {e}")
