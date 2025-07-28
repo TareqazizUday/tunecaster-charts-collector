@@ -47,16 +47,18 @@ class TuneCasterCompleteScraper:
         
         decade_pages = {
             'pop': [
+                'https://tunecaster.com/chart0.html',
+                'https://tunecaster.com/chart1.html',
                 'https://tunecaster.com/chart6.html',
                 'https://tunecaster.com/chart7.html',  
                 'https://tunecaster.com/chart8.html',
                 'https://tunecaster.com/chart9.html',
-                'https://tunecaster.com/chart0.html',
             ],
             'rock': [
-                'https://tunecaster.com/rock8.html',
-                'https://tunecaster.com/rock9.html',
+                'https://tunecaster.com/chart1.html',
                 'https://tunecaster.com/rock0.html',
+                'https://tunecaster.com/rock8.html',
+                'https://tunecaster.com/rock9.html', 
             ]
         }
         
@@ -71,6 +73,11 @@ class TuneCasterCompleteScraper:
                     urls = await self.extract_urls_from_decade_page(page, decade_url, 'pop')
                     self.pop_urls.extend(urls)
                     print(f"Found {len(urls)} pop URLs from {decade_url}")
+                    
+                    pop_2010_urls = [url for url in urls if '/charts/10/' in url]
+                    if pop_2010_urls:
+                        print(f"  -> {len(pop_2010_urls)} URLs for 2010 from {decade_url}")
+                    
                     await asyncio.sleep(1)
                 
                 print("Discovering Rock chart URLs...")
@@ -78,18 +85,78 @@ class TuneCasterCompleteScraper:
                     urls = await self.extract_urls_from_decade_page(page, decade_url, 'rock')
                     self.rock_urls.extend(urls)
                     print(f"Found {len(urls)} rock URLs from {decade_url}")
+                    
+                    rock_2010_urls = [url for url in urls if '/charts/10/' in url]
+                    if rock_2010_urls:
+                        print(f"  -> {len(rock_2010_urls)} URLs for 2010 from {decade_url}")
+                    
                     await asyncio.sleep(1)
                 
             finally:
                 await browser.close()
         
-        self.pop_urls = sorted(list(set(self.pop_urls)))
-        self.rock_urls = sorted(list(set(self.rock_urls)))
+        # Remove duplicates first
+        self.pop_urls = list(set(self.pop_urls))
+        self.rock_urls = list(set(self.rock_urls))
         
-        print(f"URL Discovery Complete:")
-        print(f"Pop Charts: {len(self.pop_urls)}")
-        print(f"Rock Charts: {len(self.rock_urls)}")
+        # Sort pop URLs to prioritize 2010s (decade 10) first
+        def sort_pop_urls(url):
+            match = re.search(r'/charts/(\d{2})/week(\d{4})\.html', url)
+            if match:
+                decade = int(match.group(1))
+                week = match.group(2)
+                if decade == 10:
+                    return (0, decade, week)  # 2010s first
+                else:
+                    return (1, decade, week)  # Other decades after
+            return (2, 99, "9999")  # Invalid URLs last
+        
+        self.pop_urls = sorted(self.pop_urls, key=sort_pop_urls)
+        
+        # Sort rock URLs to prioritize 2010s (decade 10) first
+        def sort_rock_urls(url):
+            match = re.search(r'/charts/(\d{2})/rock(\d{4})\.html', url)
+            if match:
+                decade = int(match.group(1))
+                week = match.group(2)
+                if decade == 10:
+                    return (0, decade, week)  # 2010s first
+                else:
+                    return (1, decade, week)  # Other decades after
+            return (2, 99, "9999")  # Invalid URLs last
+        
+        self.rock_urls = sorted(self.rock_urls, key=sort_rock_urls)
+        
+        # Show 2010 URLs count for both pop and rock
+        pop_2010_urls = [url for url in self.pop_urls if '/charts/10/' in url]
+        rock_2010_urls = [url for url in self.rock_urls if '/charts/10/' in url]
+        
+        print(f"\n2010 CHARTS SUMMARY:")
+        print(f"Rock 2010 URLs: {len(rock_2010_urls)}")
+        if rock_2010_urls:
+            print("First 10 2010 rock URLs:")
+            for i, url in enumerate(rock_2010_urls[:10], 1):
+                print(f"  {i:2d}. {url}")
+            if len(rock_2010_urls) > 10:
+                print(f"  ... and {len(rock_2010_urls) - 10} more")
+        
+        print(f"\nPop 2010 URLs: {len(pop_2010_urls)}")
+        if pop_2010_urls:
+            print("First 10 2010 pop URLs:")
+            for i, url in enumerate(pop_2010_urls[:10], 1):
+                print(f"  {i:2d}. {url}")
+            if len(pop_2010_urls) > 10:
+                print(f"  ... and {len(pop_2010_urls) - 10} more")
+        
+        print(f"\nURL Discovery Complete:")
+        print(f"Rock Charts: {len(self.rock_urls)} (2010: {len(rock_2010_urls)})")
+        print(f"Pop Charts: {len(self.pop_urls)} (2010: {len(pop_2010_urls)})")
         print(f"Total Charts: {len(self.pop_urls) + len(self.rock_urls)}")
+        print(f"Total 2010 Charts: {len(pop_2010_urls) + len(rock_2010_urls)}")
+        
+        print(f"\nPROCESSING ORDER:")
+        print(f"1. ALL ROCK CHARTS ({len(self.rock_urls)}) - 2010 first")
+        print(f"2. ALL POP CHARTS ({len(self.pop_urls)}) - 2010 first")
     
     async def extract_urls_from_decade_page(self, page, decade_url, chart_type):
         urls = []
@@ -516,7 +583,6 @@ class TuneCasterCompleteScraper:
         return ""
     
     def extract_chart_date_from_page(self, soup):
-        """Extract chart date from page content with enhanced date, month, and year parsing"""
         try:
             month_names = {
                 'january': 1, 'jan': 1,
@@ -809,10 +875,6 @@ class TuneCasterCompleteScraper:
                 if len(cleaned_artists) > 1:
                     return cleaned_artists
         
-        # Special case handling
-        # if 'Aaron Lewis Of Staind' in artist_text and 'Fred Durst' in artist_text:
-        #     return ['Aaron Lewis Of Staind', 'Fred Durst']
-        
         return [artist_text]
     
     def clean_songs(self, songs):
@@ -851,25 +913,80 @@ class TuneCasterCompleteScraper:
         return unique_songs
     
     async def scrape_all_charts_sequential(self):
-        print("Starting sequential chart scraping...")
+        print("\nStarting sequential chart scraping...")
+        print("Processing Order: ALL ROCK CHARTS FIRST, THEN ALL POP CHARTS")
+        print("Priority: 2010 charts will be processed first within each category!")
         
         self.load_progress()
         
         total_charts = len(self.pop_urls) + len(self.rock_urls)
         current_chart = 0
         
-        print(f"Scraping {len(self.rock_urls)} Rock Charts...")
+        # PHASE 1: Process ALL Rock Charts FIRST
+        print(f"\nPHASE 1: SCRAPING ALL {len(self.rock_urls)} ROCK CHARTS")
         for i, url in enumerate(self.rock_urls, 1):
             current_chart += 1
             
             if url in self.processed_urls:
-                print(f"[{current_chart}/{total_charts}] {i}/{len(self.rock_urls)} - SKIPPED")
+                print(f"[{current_chart}/{total_charts}] {i}/{len(self.rock_urls)} - SKIPPED (Rock)")
                 continue
                 
-            print(f"[{current_chart}/{total_charts}] {i}/{len(self.rock_urls)} - {url}")
+            # Show if it's a 2010 chart
+            is_2010 = '/charts/10/' in url
+            year_indicator = " [2010]" if is_2010 else ""
+            print(f"[{current_chart}/{total_charts}] {i}/{len(self.rock_urls)} - {url} (Rock){year_indicator}")
             
             try:
                 chart_data = await self.scrape_single_chart(url, 'rock')
+                
+                if chart_data:
+                    records_count = len(chart_data['records'])
+                    self.all_chart_data.append(chart_data)
+                    
+                    chart_date = chart_data['chart_info']['chart_date']
+                    chart_type = chart_data['chart_info']['chart_type'].upper()
+                    print(f"Chart Date: {chart_date} | Type: {chart_type}")
+                    
+                    for record in chart_data['records'][:3]:
+                        rank = record['rank']
+                        title = record['title']
+                        artists = json.loads(record['artist'])
+                        if isinstance(artists, list) and artists:
+                            artist_display = ', '.join(artists)
+                        else:
+                            artist_display = '[No Artist]'
+                        print(f"   {rank}. {title} - {artist_display}")
+                    
+                    self.save_progress(url)
+                    self.save_incremental_data()
+                    print(f"Success: {records_count} records")
+                    
+                else:
+                    print("Failed to scrape")
+                    self.save_progress(url)
+            
+            except Exception as e:
+                print(f"Error: {e}")
+                self.save_progress(url)
+            
+            await asyncio.sleep(2)
+        
+        # PHASE 2: Process ALL Pop Charts AFTER Rock Charts
+        print(f"\nPHASE 2: SCRAPING ALL {len(self.pop_urls)} POP CHARTS")
+        for i, url in enumerate(self.pop_urls, 1):
+            current_chart += 1
+            
+            if url in self.processed_urls:
+                print(f"[{current_chart}/{total_charts}] {i}/{len(self.pop_urls)} - SKIPPED (Pop)")
+                continue
+                
+            # Show if it's a 2010 chart
+            is_2010 = '/charts/10/' in url
+            year_indicator = " [2010]" if is_2010 else ""
+            print(f"[{current_chart}/{total_charts}] {i}/{len(self.pop_urls)} - {url} (Pop){year_indicator}")
+            
+            try:
+                chart_data = await self.scrape_single_chart(url, 'pop')
                 
                 if chart_data:
                     records_count = len(chart_data['records'])
@@ -935,7 +1052,7 @@ class TuneCasterCompleteScraper:
             pop_charts = len([c for c in self.all_chart_data if c['chart_info']['chart_type'] == 'pop'])
             rock_charts = len([c for c in self.all_chart_data if c['chart_info']['chart_type'] == 'rock'])
             
-            print(f"Saved: {total_charts} charts, {total_records} records (Pop: {pop_charts}, Rock: {rock_charts})")
+            print(f"Saved: {total_charts} charts, {total_records} records (Rock: {rock_charts}, Pop: {pop_charts})")
             
         except Exception as e:
             print(f"Save failed: {e}")
@@ -949,22 +1066,29 @@ class TuneCasterCompleteScraper:
         rock_count = len([c for c in self.all_chart_data if c['chart_info']['chart_type'] == 'rock'])
         total_records = sum(len(chart.get('records', [])) for chart in self.all_chart_data)
         
-        print("\n" + "="*60)
-        print("TUNECASTER SCRAPING COMPLETE")
+        # Count 2010 charts
+        pop_2010_count = len([c for c in self.all_chart_data if c['chart_info']['chart_type'] == 'pop' and '/charts/10/' in c['chart_info']['url']])
+        rock_2010_count = len([c for c in self.all_chart_data if c['chart_info']['chart_type'] == 'rock' and '/charts/10/' in c['chart_info']['url']])
+        
+        print("\nTUNECASTER SCRAPING COMPLETE")
         print("="*60)
-        print(f"Rock Charts: {rock_count}")
-        print(f"Pop Charts: {pop_count}")
+        print(f"Rock Charts: {rock_count} (2010: {rock_2010_count})")
+        print(f"Pop Charts: {pop_count} (2010: {pop_2010_count})")
         print(f"Total Charts: {len(self.all_chart_data)}")
+        print(f"Total 2010 Charts: {pop_2010_count + rock_2010_count}")
         print(f"Total Records: {total_records}")
         print(f"Data File: data/charts_data.csv")
         print(f"Progress File: data/scraper_progress.json")
+        print("="*60)
+        print("PROCESSING ORDER WAS: ALL ROCK FIRST, THEN ALL POP")
         print("="*60)
 
 async def main():
     scraper = TuneCasterCompleteScraper()
     
     print("TuneCaster Complete Scraper")
-    print("="*40)
+    print("ROCK FIRST, THEN POP (2010 Priority)")
+    print("="*60)
     
     try:
         await scraper.discover_all_chart_urls()
